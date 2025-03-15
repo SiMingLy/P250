@@ -1,3 +1,10 @@
+# Datasets
+Datasets/G1/
+Datasets/G2/
+Datasets/G3/
+Datasets/G4/
+Datasets/G5/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

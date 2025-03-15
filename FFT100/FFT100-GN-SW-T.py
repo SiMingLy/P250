@@ -7,9 +7,10 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Conv1D, MaxPooling1D, Flatten, Dropout
 from tensorflow.keras.optimizers import Adam
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from tensorflow.keras.layers import Input
 
-# 解析数据
-def parse_data(file_path):
+# 解析数据并生成滑动窗口
+def parse_data(file_path, window_size=127, factor=1):
     df = pd.read_csv(file_path, header=None)
     samples = []
     max_points = 0
@@ -32,25 +33,36 @@ def parse_data(file_path):
 
     X = np.array(processed_samples)
     n_samples = len(samples)
-    y = np.array([2 * (n_samples - 1 - i) / 3000 for i in range(n_samples)])
+    y = np.array([2 * (n_samples - 1 - i) / factor for i in range(n_samples)])
 
-    return X, y
+    # 生成滑动窗口数据
+    X_windowed = []
+    y_windowed = []
+    for i in range(len(X) - window_size):
+        X_windowed.append(X[i:i + window_size])
+        y_windowed.append(y[i + window_size - 1])  # 使用窗口的最后一行对应的输出
+
+    X_windowed = np.array(X_windowed)
+    y_windowed = np.array(y_windowed)
+
+    return X_windowed, y_windowed
 
 # 构建更复杂的模型
 def build_complex_model(input_shape):
     model = Sequential([
-        Conv1D(64, 3, padding='same', activation='relu', input_shape=input_shape),
-        MaxPooling1D(pool_size=2, strides=2, padding='same'),  # 使用 padding='same'
+        Input(shape=input_shape),  # 添加 Input 层
+        Conv1D(64, 3, padding='same', activation='relu'),
+        MaxPooling1D(pool_size=2, strides=2, padding='same'),
         Conv1D(128, 3, padding='same', activation='relu'),
-        MaxPooling1D(pool_size=2, strides=2, padding='same'),  # 使用 padding='same'
+        MaxPooling1D(pool_size=2, strides=2, padding='same'),
         Conv1D(256, 3, padding='same', activation='relu'),
-        MaxPooling1D(pool_size=2, strides=2, padding='same'),  # 使用 padding='same'
+        MaxPooling1D(pool_size=2, strides=2, padding='same'),
         Flatten(),
         Dense(512, activation='relu'),
         Dropout(0.5),
         Dense(256, activation='relu'),
         Dropout(0.5),
-        Dense(1)  # 回归任务，输出为 1 个值
+        Dense(1)
     ])
     return model
 
@@ -96,16 +108,20 @@ if __name__ == "__main__":
     # 解析训练数据
     train_path = '../Datasets/G1-C1-FFT100.csv'
     test_path = '../Datasets/G2-C1-FFT100.csv'
+    factor = 1
+    window_size = 127
+    epoch = 500
+    batch_size = 512
 
-    X, y = parse_data(train_path)
+    X, y = parse_data(train_path, window_size=window_size, factor=factor)
 
     # 数据标准化
     scaler = StandardScaler()
-    X = scaler.fit_transform(X)
-    X = X.reshape(X.shape[0], X.shape[1], 1)
+    X = np.array([scaler.fit_transform(x) for x in X])  # 对每个窗口单独标准化
+    X = X.reshape(X.shape[0], X.shape[1], X.shape[2])  # 调整形状为 (n_samples, window_size, n_features)
 
     # 五折交叉验证
-    kfold = KFold(n_splits=5, shuffle=True, random_state=42)
+    kfold = KFold(n_splits=2, shuffle=True, random_state=42)
     fold_no = 1
     all_scores = []
 
@@ -117,17 +133,17 @@ if __name__ == "__main__":
         y_train, y_val = y[train_idx], y[val_idx]
 
         # 构建更复杂的模型
-        input_shape = (X_train.shape[1], 1)
+        input_shape = (X_train.shape[1], X_train.shape[2])
         model = build_complex_model(input_shape)
 
         # 编译模型
-        model.compile(optimizer=Adam(learning_rate=0.0001), loss='mse', metrics=['mae'])
+        model.compile(optimizer=Adam(learning_rate=0.0002), loss='mse', metrics=['mae'])
 
         # 训练模型
         history = model.fit(
             X_train, y_train,
-            epochs=250,
-            batch_size=256,
+            epochs=epoch,
+            batch_size=batch_size,
             validation_data=(X_val, y_val),
             verbose=1
         )
@@ -146,9 +162,9 @@ if __name__ == "__main__":
     print(f'Average Validation MAE across all folds: {np.mean(all_scores):.4f}')
 
     # 加载额外的测试集
-    X_test, y_test = parse_data(test_path)  # 假设测试集文件为 G2-C1-FFT100.csv
-    X_test = scaler.transform(X_test)
-    X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
+    X_test, y_test = parse_data(test_path, window_size=window_size, factor=factor)
+    X_test = np.array([scaler.transform(x) for x in X_test])  # 使用训练集的 scaler 标准化
+    X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], X_test.shape[2])
 
     # 评估测试集
     test_loss, test_mae = model.evaluate(X_test, y_test, verbose=0)
@@ -165,12 +181,12 @@ if __name__ == "__main__":
     print(f'Test R²: {test_r2:.4f}')
 
     # 绘制真实值与预测值的折线图
-    plot_true_vs_predicted(y_test * 3000, y_pred * 3000)
+    plot_true_vs_predicted(y_test * factor, y_pred * factor)
 
     # 将模型输出与理想输出存入表格
     results = pd.DataFrame({
-        'True Value': y_test * 3000,
-        'Predicted Value': y_pred * 3000
+        'True Value': y_test * factor,
+        'Predicted Value': y_pred * factor
     })
-    results.to_csv('Outputs/test_results.csv', index=False)
+    # results.to_csv('../Outputs/test_results.csv', index=False)
     print('Test results saved to test_results.csv')
